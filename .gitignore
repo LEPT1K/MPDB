@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+
+# Generated data
+output/
+
+# Editor / OS
+.vscode/
+.idea/
+*.log
+Thumbs.db
