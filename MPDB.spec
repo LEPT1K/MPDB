@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-Сборка MPDB в один .exe (папка dist/MPDB5/).
+Сборка MPDB в один .exe (папка dist/MPDB/).
 
 Исходники src/ и gui/ включаются как обычные файлы данных (не как
 "замороженные" модули) — launcher.py добавляет их в sys.path во время
@@ -60,7 +60,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MPDB5',
+    name='MPDB',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -78,5 +78,5 @@ coll = COLLECT(
     Tree('gui/static', prefix=os.path.join('gui', 'static')),
     strip=False,
     upx=False,
-    name='MPDB5',
+    name='MPDB',
 )

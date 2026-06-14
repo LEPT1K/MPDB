@@ -267,10 +267,14 @@ class UpdatesChecker:
         last_checked = self.cache.get('last_checked')
         current_mtimes = self._local_db_mtimes()
 
-        # Проверяем кэш: считаем его устаревшим, если истекло время жизни
-        # или локальные файлы БД изменились после последней проверки
-        # (например, парсинг/связывание было перезапущено вручную)
-        if not force_refresh and last_checked:
+        # Проверяем кэш: считаем его устаревшим, если истекло время жизни,
+        # локальные файлы БД изменились после последней проверки
+        # (например, парсинг/связывание было перезапущено вручную),
+        # или в прошлый раз источники были недоступны (например, не было
+        # интернета) — в этом случае повторяем проверку при следующей
+        # загрузке страницы, не дожидаясь истечения CACHE_LIFETIME
+        had_unavailable = any(u.get('status') == 'unavailable' for u in self.cache.get('updates', []))
+        if not force_refresh and last_checked and not had_unavailable:
             cache_fresh = current_time - float(last_checked) < self.CACHE_LIFETIME
             files_unchanged = self.cache.get('db_mtimes') == current_mtimes
             if cache_fresh and files_unchanged:
