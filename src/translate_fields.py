@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from config import Config
 from translator import Translator
+import progress
 
 # Поля, которые нужно перевести в каждом типе файла
 FIELDS_TO_TRANSLATE = {
@@ -50,39 +51,42 @@ def apply_translations(data: list, pointers: list, originals: list, translated: 
         updated_items.add(idx)
     return len(updated_items)
 
-def translate_file(filepath: Path, fields: list, translator: Translator):
-    print(f"📄 Обработка {filepath.name}...")
+def translate_file(filepath: Path, fields: list, translator: Translator, file_progress=None):
+    progress.info(f"Обработка {filepath.name}...", progress=file_progress)
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     texts, pointers = collect_texts(data, fields)
     unique_count = len(set(t.strip() for t in texts if isinstance(t, str) and t.strip()))
-    print(f"  🔎 Найдено {len(texts)} строк ({unique_count} уникальных) для перевода")
+    progress.info(f"  {filepath.name}: найдено {len(texts)} строк ({unique_count} уникальных) для перевода")
 
     translated = translator.translate_batch(texts)
     updated = apply_translations(data, pointers, texts, translated)
 
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"✅ {filepath.name}: переведено элементов — {updated} из {len(data)}")
+    progress.success(f"{filepath.name}: переведено элементов — {updated} из {len(data)}")
 
 def main():
-    print("🎯 Выборочный перевод полей JSON-файлов (онлайн-режим)")
+    progress.info("Выборочный перевод полей JSON-файлов (онлайн-режим)", progress=5)
     translator = Translator(force_enable=True)   # принудительное включение перевода
     if not translator.enabled:
-        print("❌ Не удалось включить переводчик")
+        progress.error("Не удалось включить переводчик")
         return
 
     output_dir = Config.OUTPUT_DIR
-    for filename, fields in FIELDS_TO_TRANSLATE.items():
+    files = list(FIELDS_TO_TRANSLATE.items())
+    for i, (filename, fields) in enumerate(files):
         filepath = output_dir / filename
+        # равномерный прогресс по числу файлов (5 → 95)
+        file_progress = 5 + int((i / max(1, len(files))) * 90)
         if filepath.exists():
-            translate_file(filepath, fields, translator)
+            translate_file(filepath, fields, translator, file_progress=file_progress)
         else:
-            print(f"⚠️ Файл {filename} не найден, пропущен")
+            progress.warning(f"Файл {filename} не найден, пропущен")
 
     translator._save_cache()
-    print("🎉 Готово! Все указанные поля переведены.")
+    progress.success("Готово! Все указанные поля переведены.", progress=100)
 
 if __name__ == "__main__":
     main()

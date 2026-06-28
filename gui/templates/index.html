@@ -226,6 +226,24 @@
                 </div>
             </div>
 
+            <!-- ================= ЖУРНАЛ ИЗМЕНЕНИЙ (CHANGELOG) ================= -->
+            <div class="row mt-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-clock-history"></i> Журнал изменений баз (дельта-обновления)</h5>
+                            <small class="text-muted">Что изменилось между прогонами парсера</small>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">После каждого парсинга фиксируется, сколько записей добавилось и удалилось в каждой базе. Журнал помогает отследить новые CVE и изменения в составе баз.</p>
+                            <div id="changelogList">
+                                <!-- Записи журнала вставляются JS -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ================= МОДАЛЬНОЕ ОКНО ДЕТАЛЕЙ ИСТОЧНИКА ================= -->
             <div class="modal fade" id="sourceDetailsModal" tabindex="-1">
                 <div class="modal-dialog modal-lg">
@@ -285,6 +303,23 @@
                             <div id="linkFlowEdges">
                                 <!-- Список связей вставляется JS -->
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Покрытие связей (gap-analysis) -->
+            <div class="row mt-4" id="linkingCoverage" style="display: none;">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-diagram-3"></i> Покрытие связей (gap-analysis)</h5>
+                            <small class="text-muted">Какой % записей дотянут до смежных баз</small>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">Показывает «пробелы» в связях: сколько записей каждой базы реально связаны со смежными, сколько вообще без перекрёстных связей (orphans), и насколько полно прослеживается цепочка <strong>CVE → CWE → CAPEC → ATT&amp;CK</strong>.</p>
+                            <div id="coverageChain" class="mb-3"></div>
+                            <div id="coverageTables"></div>
                         </div>
                     </div>
                 </div>
@@ -530,39 +565,15 @@
                                             <h6 class="card-title">
                                                 <i class="bi bi-magic"></i> Автозаполнение
                                             </h6>
-                                            <p class="card-text small">Заполнение пустых полей (связи/факты/шаблоны)</p>
+                                            <p class="card-text small">Заполнение пустых полей (связи/факты/шаблоны). Доступно после перевода.</p>
                                             <div class="progress mb-2" style="height: 20px;">
                                                 <div id="autofillingProgress" class="progress-bar progress-bar-striped progress-bar-animated bg-secondary" role="progressbar" style="width: 0%">0%</div>
                                             </div>
                                             <div class="btn-group w-100">
-                                                <button class="btn btn-sm btn-secondary" onclick="startProcess('autofilling')">
+                                                <button id="autofillStartBtn" class="btn btn-sm btn-secondary" onclick="startProcess('autofilling')" disabled title="Сначала выполните «Перевод»">
                                                     <i class="bi bi-play"></i> Старт
                                                 </button>
                                                 <button class="btn btn-sm btn-danger" onclick="stopProcess('autofilling')">
-                                                    <i class="bi bi-stop"></i> Стоп
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- AI обогащение -->
-                                <div class="col-md-4 col-lg mb-3">
-                                    <div class="card h-100 border-info">
-                                        <div class="card-body">
-                                            <h6 class="card-title">
-                                                <i class="bi bi-robot"></i> AI обогащение
-                                                <span class="badge bg-warning text-dark">В разработке</span>
-                                            </h6>
-                                            <p class="card-text small">Находится в разработке — функция скоро будет доступна</p>
-                                            <div class="progress mb-2" style="height: 20px;">
-                                                <div id="enrichingProgress" class="progress-bar progress-bar-striped bg-info" role="progressbar" style="width: 0%">0%</div>
-                                            </div>
-                                            <div class="btn-group w-100">
-                                                <button class="btn btn-sm btn-info text-white" disabled title="Находится в разработке">
-                                                    <i class="bi bi-play"></i> Старт
-                                                </button>
-                                                <button class="btn btn-sm btn-danger" disabled title="Находится в разработке">
                                                     <i class="bi bi-stop"></i> Стоп
                                                 </button>
                                             </div>
@@ -856,53 +867,6 @@
                                 <button type="submit" class="btn btn-primary">
                                     <i class="bi bi-save"></i> Сохранить настройки
                                 </button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- AI настройки (в разработке) -->
-            <div class="row">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h5><i class="bi bi-robot"></i> AI настройки <span class="badge bg-warning text-dark">Находится в разработке</span></h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="alert alert-warning">
-                                <i class="bi bi-exclamation-triangle"></i>
-                                <strong>AI обогащение находится в разработке.</strong>
-                                Эта функция позволит автоматически заполнять пустые поля в базах данных с помощью искусственного интеллекта.
-                                Изменение параметров временно недоступно.
-                            </div>
-                            <form id="aiSettings">
-                                <fieldset disabled>
-                                <div class="row">
-                                    <div class="col-md-4 mb-3">
-                                        <label class="form-label">AI провайдер</label>
-                                        <select class="form-select" name="provider">
-                                            <option value="ollama">Ollama (локально)</option>
-                                            <option value="openai">OpenAI</option>
-                                        </select>
-                                    </div>
-                                    <div class="col-md-4 mb-3">
-                                        <label class="form-label">Модель</label>
-                                        <input type="text" class="form-control" name="model" value="qwen2.5:3b">
-                                    </div>
-                                    <div class="col-md-4 mb-3">
-                                        <label class="form-label">API URL</label>
-                                        <input type="text" class="form-control" name="base_url" value="http://localhost:11434/v1">
-                                    </div>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">API ключ</label>
-                                    <input type="password" class="form-control" name="api_key" placeholder="Не требуется для Ollama">
-                                </div>
-                                <button type="submit" class="btn btn-primary">
-                                    <i class="bi bi-save"></i> Сохранить настройки (скоро)
-                                </button>
-                                </fieldset>
                             </form>
                         </div>
                     </div>

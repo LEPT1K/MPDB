@@ -2,26 +2,25 @@
 import re
 import time
 import json
-import ssl
+import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from deep_translator import GoogleTranslator
 from config import Config
 
-# Создаём безопасный SSL-контекст для обхода ошибок SSL EOF
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
 
 class Translator:
     """Онлайн-переводчик через Google Translate с дедупликацией, многопоточностью и кэшированием"""
 
     MAX_TEXT_LENGTH = 4500  # безопасный лимит для Google Translate
     CACHE_SAVE_EVERY = 200  # сохранять кэш на диск каждые N новых переводов
+
+    # Упаковка нескольких коротких строк в один запрос резко сокращает их число
+    # (а значит и нагрузку на Google → меньше 429/банов и кратно быстрее первый прогон).
+    PACK_DELIM = "\n@@@~@@@\n"   # разделитель при склейке (Google сохраняет переносы и символы)
+    PACK_DELIM_CORE = "@@@~@@@"  # по чему режем результат обратно (с учётом возможной смены пробелов)
+    PACK_MAX_ITEMS = 40          # максимум строк в одной пачке (ограничивает урон при fallback)
 
     def __init__(self, target_lang: str = None, force_enable: bool = False,
                  workers: int = None, delay: float = None):
@@ -47,8 +46,17 @@ class Translator:
         self._cache = {}
         self._cache_lock = threading.Lock()
         self._cache_file = Config.OUTPUT_DIR / "translate_cache.json"
+        self._local = threading.local()  # по одному GoogleTranslator на поток
         self._load_cache()
         self._dirty = 0
+
+    def _get_translator(self) -> GoogleTranslator:
+        """Переиспользуем один инстанс на поток вместо создания на каждый запрос."""
+        gt = getattr(self._local, "gt", None)
+        if gt is None:
+            gt = GoogleTranslator(source='auto', target=self.target_lang)
+            self._local.gt = gt
+        return gt
 
     def _load_cache(self):
         if self._cache_file.exists():
@@ -105,41 +113,80 @@ class Translator:
             return True
         return False
 
-    def _translate_part(self, part: str) -> str:
-        """Переводит один фрагмент текста (выполняется в отдельном потоке)"""
-        translator = GoogleTranslator(source='auto', target=self.target_lang)
+    def _request_translate(self, text: str):
+        """Один HTTP-запрос с повторами и джиттером. Возвращает перевод или None при провале."""
+        translator = self._get_translator()
         for attempt in range(self.max_retries):
             try:
                 if self.delay > 0:
-                    time.sleep(self.delay)
-                result = translator.translate(part)
-                return result if result else part
+                    # джиттер вместо фиксированной паузы — менее «роботизированный» трафик
+                    time.sleep(self.delay * random.uniform(0.5, 1.5))
+                result = translator.translate(text)
+                return result if result else text
             except Exception as e:
-                print(f"⚠️ Попытка {attempt+1}/{self.max_retries} для '{part[:40]}...' провалена: {e}")
+                print(f"⚠️ Попытка {attempt+1}/{self.max_retries} для '{text[:40]}...' провалена: {e}")
                 time.sleep(2 * (attempt + 1))
-        return part
+        return None
+
+    def _build_packs(self, parts: list) -> list:
+        """Группирует фрагменты в пачки, не превышая MAX_TEXT_LENGTH и PACK_MAX_ITEMS."""
+        packs, cur, cur_len = [], [], 0
+        dl = len(self.PACK_DELIM)
+        for p in parts:
+            add = len(p) + (dl if cur else 0)
+            if cur and (cur_len + add > self.MAX_TEXT_LENGTH or len(cur) >= self.PACK_MAX_ITEMS):
+                packs.append(cur)
+                cur, cur_len, add = [], 0, len(p)
+            cur.append(p)
+            cur_len += add
+        if cur:
+            packs.append(cur)
+        return packs
+
+    def _translate_pack(self, parts: list) -> dict:
+        """Переводит пачку строк одним запросом; при сбое разметки — поштучный fallback."""
+        if len(parts) == 1:
+            tr = self._request_translate(parts[0])
+            return {parts[0]: tr if tr is not None else parts[0]}
+
+        joined = self.PACK_DELIM.join(parts)
+        tr = self._request_translate(joined)
+        if tr is not None:
+            pieces = [piece.strip() for piece in tr.split(self.PACK_DELIM_CORE)]
+            # доверяем результату только если разделители уцелели и кол-во совпало
+            if len(pieces) == len(parts) and all(pieces):
+                return dict(zip(parts, pieces))
+
+        # разметка не сохранилась — переводим элементы пачки по одному (надёжно, но медленнее)
+        out = {}
+        for part in parts:
+            t = self._request_translate(part)
+            out[part] = t if t is not None else part
+        return out
 
     def _translate_parts_concurrently(self, parts: list):
-        """Переводит уникальные фрагменты параллельно и складывает результаты в кэш"""
+        """Переводит уникальные фрагменты пачками параллельно и складывает результаты в кэш"""
         total = len(parts)
-        print(f"    🌐 Перевод {total} уникальных фрагментов ({self.workers} потоков, задержка {self.delay}с)...")
+        packs = self._build_packs(parts)
+        print(f"    🌐 Перевод {total} уникальных фрагментов за {len(packs)} запросов "
+              f"({self.workers} потоков, задержка ~{self.delay}с)...")
         completed = 0
-        futures = {self._executor.submit(self._translate_part, part): part for part in parts}
+        futures = {self._executor.submit(self._translate_pack, pack): pack for pack in packs}
         for future in as_completed(futures):
-            part = futures[future]
+            pack = futures[future]
             try:
-                translated = future.result()
+                mapping = future.result()
             except Exception:
-                translated = part
+                mapping = {p: p for p in pack}
             with self._cache_lock:
-                self._cache[part] = translated
-                self._dirty += 1
+                for part, translated in mapping.items():
+                    self._cache[part] = translated
+                    self._dirty += 1
                 if self._dirty >= self.CACHE_SAVE_EVERY:
                     self._save_cache()
                     self._dirty = 0
-            completed += 1
-            if completed % 50 == 0 or completed == total:
-                print(f"      ...переведено {completed}/{total}")
+            completed += len(pack)
+            print(f"      ...переведено {min(completed, total)}/{total}")
 
     def translate_batch(self, texts: list) -> list:
         """Переводит список строк с глобальной дедупликацией и параллельными запросами"""

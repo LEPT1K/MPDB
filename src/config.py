@@ -14,12 +14,11 @@ class Config:
     # 🔹 НАСТРОЙКА ПЕРЕВОДА 🔹
     ENABLE_TRANSLATION = False
     TRANSLATE_TO = "ru" # <- Код языка для Русского
-    TRANSLATION_DELAY = 0.15    # Задержка перед каждым запросом в потоке (сек)
-    TRANSLATION_WORKERS = 15
+    TRANSLATION_DELAY = 0.2     # Базовая задержка перед запросом в потоке (сек, применяется джиттер ±50%)
+    TRANSLATION_WORKERS = 8     # Запросы упаковываются пачками, поэтому много потоков не нужно
     TRANSLATION_MAX_RETRIES = 5     # Число повторных попыток при ошибке
-    TRANSLATION_SERVICE = "google" # google или yandex
-    YANDEX_API_KEY = "" # API key Яндекса (если выбран Яндекс)
-     
+    TRANSLATION_SERVICE = "google" # перевод выполняется через Google Translate
+
     # Настройки загрузки
     REQUEST_TIMEOUT = 30
     RETRY_ATTEMPTS = 3
@@ -57,12 +56,6 @@ class Config:
             "requires_service": "не определено",
         },
     }
-
-    # AI ENRICHER
-    AI_PROVIDER = "ollama" # ollama, openai
-    AI_MODEL = "qwen2.5:3b" # for ollama: qwen2.5:3b, for openai: gpt-4o-mini
-    AI_API_KEY = "" # only for openai
-    AI_BASE_URL = "http://localhost:11434/v1" # ollama base URL
 
     # Источники данных
     SOURCES = {

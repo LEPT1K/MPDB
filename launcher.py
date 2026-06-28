@@ -12,6 +12,7 @@
 выполняет указанный скрипт внутри себя через runpy, не поднимая GUI.
 """
 
+import socket
 import sys
 import threading
 import time
@@ -38,6 +39,18 @@ def run_step_script(script_path: str):
     runpy.run_path(script_path, run_name='__main__')
 
 
+def _port_is_free(port: int) -> bool:
+    """Проверяет, свободен ли порт на localhost (пробное связывание)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(('127.0.0.1', port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def run_gui():
     data_dir = get_data_dir()
     sys.path.insert(0, str(data_dir / 'src'))
@@ -52,29 +65,25 @@ def run_gui():
     print("Для остановки нажмите Ctrl+C")
     print()
 
-    ports = [5000, 5001]
-    for port in ports:
-        try:
-            print("Откройте браузер и перейдите по адресу:")
-            print(f"   http://localhost:{port}")
-            print()
+    # Выбираем свободный порт ДО старта сервера, чтобы не открывать браузер
+    # на занятый порт (иначе всплывала мёртвая вкладка localhost:5000).
+    chosen = next((p for p in (5000, 5001) if _port_is_free(p)), None)
+    if chosen is None:
+        print("\nНе удалось запустить сервер. Порты 5000 и 5001 заняты.")
+        sys.exit(1)
 
-            def open_browser(p=port):
-                time.sleep(1.5)
-                webbrowser.open(f"http://localhost:{p}")
+    print("Откройте браузер и перейдите по адресу:")
+    print(f"   http://localhost:{chosen}")
+    print()
 
-            threading.Thread(target=open_browser, daemon=True).start()
+    def open_browser(p=chosen):
+        time.sleep(1.5)
+        webbrowser.open(f"http://localhost:{p}")
 
-            socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
-            break
-        except OSError as e:
-            if hasattr(e, 'winerror') and e.winerror == 10048:  # Порт занят
-                if port == ports[-1]:
-                    print("\nНе удалось запустить сервер. Порты 5000 и 5001 заняты.")
-                    sys.exit(1)
-                print(f"Порт {port} занят. Пробуем следующий порт...")
-            else:
-                raise
+    threading.Thread(target=open_browser, daemon=True).start()
+
+    # host=127.0.0.1: локальный инструмент не должен слушать на всех интерфейсах LAN
+    socketio.run(app, host='127.0.0.1', port=chosen, debug=False, allow_unsafe_werkzeug=True)
 
 
 def main():

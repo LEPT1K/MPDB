@@ -21,6 +21,7 @@ import html
 import argparse
 from pathlib import Path
 from config import Config
+import progress
 
 MAX_LINKS = 10          # максимум ссылок в поле-связи (как в cross_linker)
 MAX_DETECTION_CHARS = 1200  # ограничение длины собранного detection
@@ -441,20 +442,23 @@ def main():
     parser.add_argument("--no-translate", action="store_true", help="Не переводить заполненные detection")
     args = parser.parse_args()
 
-    print("🪄 Автозаполнение пустых полей (Шаг 4)")
+    progress.info("Автозаполнение пустых полей (Шаг 4)", progress=5)
     filler = AutoFiller()
     if not filler.load():
-        print("❌ Базы не найдены в output/")
+        progress.error("Базы не найдены в output/")
         return 1
 
     filler.fill_links()
+    progress.info("Ярус A (связи) завершён", progress=30)
     filler.extract_facts()
+    progress.info("Ярус B (факты из описаний) завершён", progress=50)
     if not args.no_detection:
         filler.fill_attack_detection(stix_path=args.stix, translate=not args.no_translate)
+        progress.info("Ярус C (detection из STIX) завершён", progress=75)
     filler.apply_templates()
     filler.save()
     filler.report()
-    print("\n🎉 Автозаполнение завершено")
+    progress.success("Автозаполнение завершено", progress=100)
     return 0
 
 

@@ -13,7 +13,6 @@ let processStates = {
     parsing: 'idle',
     linking: 'idle',
     autofilling: 'idle',
-    enriching: 'idle',
     translating: 'idle'
 };
 
@@ -161,7 +160,10 @@ function initSocket() {
         updateProgress(data.process, 100);
         processStates[data.process] = 'completed';
         addLog('success', `Процесс "${data.process}" завершен`);
-        
+
+        // Автозаполнение становится доступным только после завершения перевода
+        updateAutofillGate();
+
         // Обновляем статистику
         setTimeout(loadDashboardData, 1000);
     });
@@ -269,6 +271,7 @@ function loadDashboardData() {
             updateProgress(process, state.progress);
             processStates[process] = state.status;
         });
+        updateAutofillGate();
     });
 }
 
@@ -288,19 +291,27 @@ function openOutputFolder() {
     });
 }
 
+// Автозаполнение работает по русским словарям/шаблонам → должно идти после перевода.
+// Кнопка доступна только когда перевод завершён в текущей сессии.
+function updateAutofillGate() {
+    const ready = processStates['translating'] === 'completed';
+    const btn = $('#autofillStartBtn');
+    btn.prop('disabled', !ready);
+    btn.attr('title', ready ? 'Запустить автозаполнение' : 'Сначала выполните «Перевод»');
+}
+
 function startProcess(processName) {
     if (processStates[processName] === 'running') {
         showToast('warning', 'Процесс уже запущен');
         return;
     }
-    
-    // Проверка для AI обогащения (в разработке)
-    if (processName === 'enriching') {
-        showToast('info', 'AI обогащение находится в разработке. Эта функция скоро будет доступна.');
-        addLog('info', '⚠️ AI обогащение находится в разработке');
+
+    // Автозаполнение разрешено только после перевода (работает на русском языке)
+    if (processName === 'autofilling' && processStates['translating'] !== 'completed') {
+        showToast('warning', 'Сначала выполните «Перевод» — автозаполнение работает на русском языке');
         return;
     }
-    
+
     socket.emit('start_process', { process: processName });
     showToast('info', `Запуск процесса: ${processName}`);
 }
@@ -930,11 +941,6 @@ function loadSettings() {
         $('input[name="workers"]').val(config.translation.workers || 5);
         $('input[name="delay"]').val(config.translation.delay || 0.4);
         $('input[name="max_retries"]').val(config.translation.max_retries || 5);
-        
-        // AI настройки
-        $('select[name="provider"]').val(config.ai.provider || 'ollama');
-        $('input[name="model"]').val(config.ai.model || 'qwen2.5:3b');
-        $('input[name="base_url"]').val(config.ai.base_url || 'http://localhost:11434/v1');
     });
 }
 
@@ -970,12 +976,6 @@ function initForms() {
         };
         
         saveConfig(formData);
-    });
-    
-    // Форма AI настроек — функция в разработке, изменение параметров запрещено
-    $('#aiSettings').submit(function(e) {
-        e.preventDefault();
-        showToast('info', 'AI обогащение находится в разработке. Изменение параметров временно недоступно.');
     });
 }
 
@@ -1084,6 +1084,69 @@ function loadUpdates() {
             console.error('Updates error:', error);
         }
     });
+    loadChangelog();
+}
+
+const CHANGELOG_DB_COLORS = { capec: '#0d6efd', cwe: '#ffc107', attack: '#dc3545', cve: '#198754' };
+
+function loadChangelog() {
+    /**Загрузить журнал изменений баз (дельта-обновления)*/
+    $.ajax({
+        url: '/api/updates/changelog?limit=20',
+        method: 'GET',
+        timeout: 10000,
+        success: function(data) {
+            renderChangelog(data.changelog || []);
+        },
+        error: function(error) {
+            $('#changelogList').html('<p class="text-muted small mb-0">Не удалось загрузить журнал изменений.</p>');
+            console.error('Changelog error:', error);
+        }
+    });
+}
+
+function renderChangelog(entries) {
+    /**Отрисовать записи журнала изменений*/
+    const container = $('#changelogList');
+    if (!entries.length) {
+        container.html('<p class="text-muted small mb-0">Журнал пуст. Запустите парсинг, чтобы зафиксировать состав баз — последующие прогоны покажут, что изменилось.</p>');
+        return;
+    }
+
+    let html = '<div class="list-group">';
+    entries.forEach(entry => {
+        const dt = new Date(entry.timestamp);
+        const dateStr = isNaN(dt) ? entry.timestamp : dt.toLocaleString('ru-RU');
+        const badge = entry.is_baseline
+            ? '<span class="badge bg-secondary ms-2">базовый снимок</span>'
+            : '';
+
+        let chips = '';
+        Object.keys(entry.changes || {}).forEach(dbKey => {
+            const ch = entry.changes[dbKey];
+            const color = CHANGELOG_DB_COLORS[dbKey] || '#6c757d';
+            const addStr = ch.added ? `<span class="text-success">+${ch.added.toLocaleString('ru-RU')}</span>` : '';
+            const remStr = ch.removed ? `<span class="text-danger">-${ch.removed.toLocaleString('ru-RU')}</span>` : '';
+            const delta = [addStr, remStr].filter(Boolean).join(' / ') || '<span class="text-muted">без изменений</span>';
+            chips += `
+                <div class="me-3 mb-1 d-inline-block">
+                    <span class="badge" style="background-color: ${color}">${escapeHtml(ch.label)}</span>
+                    <span class="small ms-1">${delta}</span>
+                    <span class="text-muted small">(всего ${ch.total.toLocaleString('ru-RU')})</span>
+                </div>`;
+        });
+
+        html += `
+            <div class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong class="small"><i class="bi bi-calendar3"></i> ${dateStr}</strong>
+                    ${badge}
+                </div>
+                <div>${chips}</div>
+            </div>`;
+    });
+    html += '</div>';
+    container.html(html);
 }
 
 function refreshUpdates() {
@@ -1333,6 +1396,7 @@ function loadLinkingOverview() {
     /**Загрузить статистику связей и отрисовать обзорную диаграмму*/
     $('#linkingLoading').show();
     $('#linkingOverview').hide();
+    $('#linkingCoverage').hide();
     $('#linkingDetails').hide();
     $('#linkingPathSection').hide();
     $('#linkingError').hide();
@@ -1348,6 +1412,7 @@ function loadLinkingOverview() {
             $('#linkingOverview').show();
             $('#linkingDetails').show();
             $('#linkingPathSection').show();
+            loadLinkingCoverage();
         },
         error: function(error) {
             $('#linkingLoading').hide();
@@ -1356,6 +1421,101 @@ function loadLinkingOverview() {
             console.error('Linking stats error:', error);
         }
     });
+}
+
+function loadLinkingCoverage() {
+    /**Загрузить и отрисовать отчёт о покрытии связей (gap-analysis)*/
+    $.ajax({
+        url: '/api/linking/coverage',
+        method: 'GET',
+        timeout: 15000,
+        success: function(data) {
+            if (data && data.databases) {
+                renderCoverage(data);
+                $('#linkingCoverage').show();
+            }
+        },
+        error: function(error) {
+            console.error('Coverage error:', error);
+        }
+    });
+}
+
+function coverageBar(percent, color) {
+    /**HTML-полоска прогресса для процента покрытия*/
+    const p = Math.max(0, Math.min(100, percent));
+    return `
+        <div class="progress" style="height: 18px; min-width: 120px;">
+            <div class="progress-bar" role="progressbar" style="width: ${p}%; background-color: ${color};">${percent}%</div>
+        </div>`;
+}
+
+function coverageColor(percent) {
+    if (percent >= 80) return '#198754';   // зелёный
+    if (percent >= 50) return '#fd7e14';   // оранжевый
+    return '#dc3545';                       // красный
+}
+
+function renderCoverage(data) {
+    /**Отрисовать сквозную цепочку и таблицы покрытия по базам*/
+    const chain = data.chain || {};
+    const chainItems = [
+        ['CVE → CWE', chain.cve_to_cwe],
+        ['CVE → CAPEC', chain.cve_to_capec],
+        ['CVE → ATT&CK', chain.cve_to_attack],
+    ];
+    let chainHtml = `<h6 class="text-muted">Сквозная цепочка по ${(data.cve_total || 0).toLocaleString('ru-RU')} CVE</h6><div class="row g-2 mb-2">`;
+    chainItems.forEach(([label, info]) => {
+        const pct = info ? info.percent : 0;
+        chainHtml += `
+            <div class="col-md-4">
+                <div class="border rounded p-2">
+                    <div class="d-flex justify-content-between small mb-1">
+                        <span>${label}</span>
+                        <span class="text-muted">${info ? info.count.toLocaleString('ru-RU') : 0} есть / ${info ? info.missing.toLocaleString('ru-RU') : 0} нет</span>
+                    </div>
+                    ${coverageBar(pct, coverageColor(pct))}
+                </div>
+            </div>`;
+    });
+    chainHtml += '</div>';
+    $('#coverageChain').html(chainHtml);
+
+    const dbs = data.databases || {};
+    let rows = '';
+    Object.keys(dbs).forEach(dbKey => {
+        const db = dbs[dbKey];
+        const fieldKeys = Object.keys(db.fields || {});
+        const fieldsCells = fieldKeys.map(fk => {
+            const f = db.fields[fk];
+            return `<div class="mb-1"><div class="small text-muted">→ ${escapeHtml(f.label)} (${f.count.toLocaleString('ru-RU')})</div>${coverageBar(f.percent, coverageColor(f.percent))}</div>`;
+        }).join('') || '<span class="text-muted small">—</span>';
+
+        rows += `
+            <tr>
+                <td><strong style="color: ${LINK_DB_COLORS[dbKey] || '#6c757d'}">${escapeHtml(db.label)}</strong><div class="small text-muted">${db.total.toLocaleString('ru-RU')} записей</div></td>
+                <td>${fieldsCells}</td>
+                <td class="text-center">${db.linked_any.percent}%<div class="small text-muted">${db.linked_any.count.toLocaleString('ru-RU')}</div></td>
+                <td class="text-center">${db.orphans.percent}%<div class="small text-muted">${db.orphans.count.toLocaleString('ru-RU')}</div></td>
+            </tr>`;
+    });
+
+    const tableHtml = `
+        <h6 class="text-muted">Покрытие по базам</h6>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>База</th>
+                        <th>Покрытие связей</th>
+                        <th class="text-center">Со связями</th>
+                        <th class="text-center">Без связей<br><small class="text-muted fw-normal">(orphans)</small></th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+    $('#coverageTables').html(tableHtml);
 }
 
 function renderLinkFlowDiagram(data) {

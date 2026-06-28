@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from config import Config
 from updates_checker import UpdatesChecker
 from link_graph import LinkGraph
+from progress import parse_event
 from exporters import DB_TITLES, export_csv, export_pdf_report, export_xlsx
 
 app = Flask(__name__)
@@ -35,7 +36,6 @@ process_status = {
     'parsing': {'status': 'idle', 'progress': 0, 'log': []},
     'linking': {'status': 'idle', 'progress': 0, 'log': []},
     'autofilling': {'status': 'idle', 'progress': 0, 'log': []},
-    'enriching': {'status': 'idle', 'progress': 0, 'log': []},
     'translating': {'status': 'idle', 'progress': 0, 'log': []}
 }
 
@@ -51,6 +51,47 @@ link_graph = None
 def get_output_dir():
     """Получить путь к директории output"""
     return Config.OUTPUT_DIR
+
+# Файл для сохранения статуса процессов между перезапусками приложения
+STATUS_FILE = Config.OUTPUT_DIR / 'process_status.json'
+
+def save_process_status():
+    """Сохранить статус и прогресс процессов на диск (без объёмных логов)."""
+    try:
+        slim = {name: {'status': st['status'], 'progress': st['progress']}
+                for name, st in process_status.items()}
+        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATUS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(slim, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Не удалось сохранить статус процессов: {e}")
+
+def load_process_status():
+    """Восстановить статус процессов при запуске.
+
+    Процесс, помеченный 'running', после перезапуска приложения уже не выполняется
+    (его подпроцесс умер вместе с прошлым сервером) — сбрасываем такой в 'idle'.
+    """
+    try:
+        if not STATUS_FILE.exists():
+            return
+        with open(STATUS_FILE, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        for name, value in (saved or {}).items():
+            if name in process_status and isinstance(value, dict):
+                st = value.get('status', 'idle')
+                if st == 'running':
+                    st = 'idle'
+                    progress_val = 0
+                else:
+                    progress_val = value.get('progress', 0)
+                process_status[name]['status'] = st
+                process_status[name]['progress'] = progress_val
+    except Exception as e:
+        print(f"Не удалось загрузить статус процессов: {e}")
+
+# Восстанавливаем сохранённый статус при импорте модуля (в т.ч. под launcher.py)
+load_process_status()
 
 def load_json_file(filename, as_dict=False):
     """Загрузить JSON файл.
@@ -99,7 +140,6 @@ PROCESS_SCRIPTS = {
     'parsing': 'step1_parse.py',
     'linking': 'step2_link.py',
     'autofilling': 'step4_autofill.py',
-    'enriching': 'step3_enrich_ai.py',
     'translating': 'translate_fields.py'
 }
 
@@ -109,10 +149,11 @@ def run_real_process(process_name):
     status['status'] = 'running'
     status['progress'] = 0
     status['log'] = []
-    
+    save_process_status()
+
     # Отправляем уведомление о старте
     socketio.emit('process_started', {'process': process_name})
-    
+
     script_name = PROCESS_SCRIPTS.get(process_name)
     if not script_name:
         status['status'] = 'error'
@@ -129,6 +170,7 @@ def run_real_process(process_name):
             'status': 'error',
             'progress': 0
         })
+        save_process_status()
         return
     
     src_dir = Path(__file__).parent.parent / 'src'
@@ -149,13 +191,17 @@ def run_real_process(process_name):
             'status': 'error',
             'progress': 0
         })
+        save_process_status()
         return
-    
+
     try:
         # Запускаем процесс с правильным рабочим каталогом
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
-        
+        # Просим шаги слать структурные события (уровень/прогресс) вместо
+        # угадывания по эмодзи — см. src/progress.py
+        env['MPDB_STRUCTURED'] = '1'
+
         process = subprocess.Popen(
             [sys.executable, '-u', str(script_path)],
             stdout=subprocess.PIPE,
@@ -188,21 +234,35 @@ def run_real_process(process_name):
             if line:
                 total_lines += 1
 
-                # Определяем тип сообщения для цветовой маркировки
-                log_type = 'info'
-                if '✅' in line or 'OK' in line or 'успешно' in line.lower():
-                    log_type = 'success'
-                elif '❌' in line or 'ERROR' in line or 'ошибка' in line.lower():
-                    log_type = 'error'
-                elif '⚠️' in line or 'WARNING' in line or 'предупреждение' in line.lower():
-                    log_type = 'warning'
+                # Сначала пробуем разобрать структурное событие (уровень/прогресс)
+                event = parse_event(line)
+                explicit_progress = None
+                if event is not None:
+                    log_type = event['level'] if event['level'] in ('info', 'success', 'warning', 'error') else 'info'
+                    line = event.get('msg', '')
+                    explicit_progress = event.get('progress')
+                else:
+                    # Fallback для строк без события: эвристика по эмодзи/ключевым словам
+                    log_type = 'info'
+                    if '✅' in line or 'OK' in line or 'успешно' in line.lower():
+                        log_type = 'success'
+                    elif '❌' in line or 'ERROR' in line or 'ошибка' in line.lower():
+                        log_type = 'error'
+                    elif '⚠️' in line or 'WARNING' in line or 'предупреждение' in line.lower():
+                        log_type = 'warning'
+
+                if not line:
+                    continue
 
                 status['log'].append(line)
 
-                # Обновляем прогресс
-                progress = min(int((total_lines / estimated_lines) * 95), 95)
-                if progress < 5:
-                    progress = 5
+                # Явный прогресс из события имеет приоритет над оценкой по числу строк
+                if explicit_progress is not None:
+                    progress = max(5, min(int(explicit_progress), 95))
+                else:
+                    progress = min(int((total_lines / estimated_lines) * 95), 95)
+                    if progress < 5:
+                        progress = 5
                 status['progress'] = progress
 
                 socketio.emit('process_update', {
@@ -309,6 +369,9 @@ def run_real_process(process_name):
             'status': 'error',
             'progress': 100
         })
+
+    # Сохраняем итоговый статус (любая ветка: completed/stopped/error) на диск
+    save_process_status()
 
 # ==================== МАРШРУТЫ ====================
 
@@ -521,11 +584,6 @@ def get_config():
             'delay': Config.TRANSLATION_DELAY,
             'max_retries': Config.TRANSLATION_MAX_RETRIES
         },
-        'ai': {
-            'provider': Config.AI_PROVIDER,
-            'model': Config.AI_MODEL,
-            'base_url': Config.AI_BASE_URL
-        },
         'limits': {
             'max_capec': Config.MAX_CAPEC_RECORDS,
             'max_cwe': Config.MAX_CWE_RECORDS,
@@ -537,7 +595,7 @@ def get_config():
 
 @app.route('/api/config', methods=['PUT'])
 def update_config():
-    """Обновить настройки перевода/AI и сохранить их в config.py"""
+    """Обновить настройки перевода и сохранить их в config.py"""
     try:
         data = request.json or {}
         updates = {}
@@ -553,13 +611,6 @@ def update_config():
         for json_key, config_key in translation_map.items():
             if json_key in translation:
                 updates[config_key] = translation[json_key]
-
-        # AI обогащение находится в разработке — изменение его параметров запрещено
-        if data.get('ai'):
-            return jsonify({
-                'status': 'error',
-                'message': 'AI обогащение находится в разработке. Изменение параметров временно недоступно.'
-            }), 403
 
         if updates:
             update_config_file(updates)
@@ -604,6 +655,7 @@ def stop_process_api(process_name):
         handle = process_handles.get(process_name)
         if handle and handle.poll() is None:
             handle.terminate()
+        save_process_status()
         return jsonify({'status': 'success', 'message': f'Процесс {process_name} остановлен'})
     return jsonify({'status': 'error', 'message': 'Процесс не найден'}), 404
 
@@ -624,6 +676,16 @@ def get_updates():
         return jsonify(data)
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e), 'updates': []}), 500
+
+@app.route('/api/updates/changelog', methods=['GET'])
+def get_changelog():
+    """Журнал изменений состава баз (дельта-обновления между прогонами парсера)"""
+    try:
+        from db_history import DBHistory
+        limit = request.args.get('limit', 20, type=int) or 20
+        return jsonify(DBHistory(get_output_dir()).get_changelog(limit))
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e), 'changelog': []}), 500
 
 @app.route('/api/updates/<source_key>', methods=['GET'])
 def get_source_comparison(source_key):
@@ -652,6 +714,19 @@ def get_linking_stats():
             link_graph = LinkGraph(get_output_dir())
 
         return jsonify(link_graph.get_link_statistics())
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/linking/coverage', methods=['GET'])
+def get_linking_coverage():
+    """Отчёт о покрытии связей (gap-analysis): % записей, дотянутых до смежных баз"""
+    global link_graph
+
+    try:
+        if link_graph is None:
+            link_graph = LinkGraph(get_output_dir())
+
+        return jsonify(link_graph.get_coverage_report())
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -721,13 +796,14 @@ def handle_start_process(data):
     """Запуск процесса"""
     process_name = data.get('process')
 
-    # AI обогащение находится в разработке — запуск запрещён
-    if process_name == 'enriching':
+    # Автозаполнение работает по русским словарям/шаблонам, поэтому должно идти
+    # ПОСЛЕ перевода. Блокируем запуск, пока перевод не завершён в этой сессии.
+    if process_name == 'autofilling' and process_status['translating']['status'] != 'completed':
         emit('process_update', {
             'process': process_name,
             'status': 'idle',
             'progress': 0,
-            'log': '⚠️ AI обогащение находится в разработке',
+            'log': '⚠️ Сначала выполните «Перевод» — автозаполнение работает на русском языке',
             'log_type': 'warning'
         })
         return
@@ -759,6 +835,7 @@ def handle_stop_process(data):
         handle = process_handles.get(process_name)
         if handle and handle.poll() is None:
             handle.terminate()
+        save_process_status()
         emit('process_stopped', {'process': process_name})
 
 @socketio.on('clear_log')
@@ -780,4 +857,5 @@ if __name__ == '__main__':
     get_output_dir().mkdir(parents=True, exist_ok=True)
     
     # allow_unsafe_werkzeug: GUI — локальный инструмент, продакшен-сервер не требуется
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+    # host=127.0.0.1: не выставляем локальный инструмент в LAN
+    socketio.run(app, host='127.0.0.1', port=5000, debug=False, allow_unsafe_werkzeug=True)

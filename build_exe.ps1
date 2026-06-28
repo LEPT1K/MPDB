@@ -7,7 +7,11 @@ Set-Location $PSScriptRoot
 .\.venv\Scripts\pyinstaller.exe MPDB.spec --noconfirm
 
 # COLLECT пересоздаёт dist\MPDB с нуля - копируем базы данных рядом с .exe
-Copy-Item -Path "output" -Destination "dist\MPDB\output" -Recurse -Force
+if (Test-Path "output") {
+    Copy-Item -Path "output" -Destination "dist\MPDB\output" -Recurse -Force
+} else {
+    Write-Host "Папка output не найдена - базы данных не скопированы (будут созданы при первом запуске)."
+}
 
 Write-Host ""
 Write-Host "Готово: dist\MPDB\MPDB.exe"

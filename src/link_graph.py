@@ -40,6 +40,23 @@ DB_LABELS = {
     'cve': 'CVE',
 }
 
+# Ожидаемые перекрёстные связи каждой базы (по схеме FIELD_MAPPING) — основа для
+# отчёта о покрытии (gap-analysis): какой % записей реально дотянут до смежных баз.
+EXPECTED_LINKS = {
+    'capec': ['related_cwe', 'related_mitre'],
+    'cve':   ['related_cwe', 'related_capec', 'related_mitre'],
+    'attack': ['related_cwe', 'related_capec'],
+    'cwe':   ['related_capec'],
+}
+
+# Человекочитаемые подписи полей-связей
+LINK_FIELD_LABELS = {
+    'related_capec': 'CAPEC',
+    'related_cwe': 'CWE',
+    'related_mitre': 'ATT&CK',
+    'related_cve': 'CVE',
+}
+
 # Сколько входящих связей показывать в эго-сети для сильно цитируемых узлов
 MAX_INCOMING_NEIGHBORS = 25
 MAX_OUTGOING_NEIGHBORS = 50
@@ -182,6 +199,63 @@ class LinkGraph:
             'total_links': sum(len(v) for v in self._outgoing.values()),
             'top_referenced': top_referenced_list,
         }
+
+    def get_coverage_report(self) -> dict:
+        """Отчёт о покрытии связей (gap-analysis).
+
+        Для каждой базы считает, какой процент записей реально дотянут до смежных
+        баз по ожидаемым полям-связям, сколько записей вообще без перекрёстных
+        связей (orphans), и сквозное покрытие цепочки CVE → CWE → CAPEC → ATT&CK.
+        """
+        self._ensure_fresh()
+
+        totals = {db: 0 for db in DB_FILES}
+        field_hits = {db: {f: 0 for f in EXPECTED_LINKS.get(db, [])} for db in DB_FILES}
+        linked_any = {db: 0 for db in DB_FILES}
+
+        for node_id, node in self._nodes.items():
+            db = node['db']
+            if db not in totals:
+                continue
+            totals[db] += 1
+            fields_present = {field for _t, field in self._outgoing.get(node_id, [])}
+            if fields_present:
+                linked_any[db] += 1
+            for field in EXPECTED_LINKS.get(db, []):
+                if field in fields_present:
+                    field_hits[db][field] += 1
+
+        def pct(count: int, total: int) -> float:
+            return round(count * 100 / total, 1) if total else 0.0
+
+        databases = {}
+        for db in DB_FILES:
+            total = totals[db]
+            databases[db] = {
+                'label': DB_LABELS[db],
+                'total': total,
+                'fields': {
+                    field: {
+                        'label': LINK_FIELD_LABELS.get(field, field),
+                        'count': field_hits[db][field],
+                        'missing': total - field_hits[db][field],
+                        'percent': pct(field_hits[db][field], total),
+                    }
+                    for field in EXPECTED_LINKS.get(db, [])
+                },
+                'linked_any': {'count': linked_any[db], 'percent': pct(linked_any[db], total)},
+                'orphans': {'count': total - linked_any[db], 'percent': pct(total - linked_any[db], total)},
+            }
+
+        # Сквозная цепочка CVE → CWE → CAPEC → ATT&CK (по полям записей CVE)
+        cve_fields = databases['cve']['fields']
+        chain = {
+            'cve_to_cwe': cve_fields.get('related_cwe', {'count': 0, 'percent': 0.0, 'missing': totals['cve']}),
+            'cve_to_capec': cve_fields.get('related_capec', {'count': 0, 'percent': 0.0, 'missing': totals['cve']}),
+            'cve_to_attack': cve_fields.get('related_mitre', {'count': 0, 'percent': 0.0, 'missing': totals['cve']}),
+        }
+
+        return {'databases': databases, 'chain': chain, 'cve_total': totals['cve']}
 
     def search_nodes(self, query: str, limit: int = 20) -> List[dict]:
         """Поиск узлов по id или названию"""

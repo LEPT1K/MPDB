@@ -9,6 +9,7 @@
 """
 
 import os
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 datas = []
@@ -32,13 +33,26 @@ datas += [
 ]
 
 # Не даём PyInstaller "заморозить" код проекта в PYZ — он будет загружаться
-# во время выполнения как обычные .py файлы из _internal/src и _internal/gui
-excludes = [
-    'config', 'loader', 'translator', 'normalizer', 'cross_linker',
-    'ai_enricher', 'link_graph', 'updates_checker', 'menu', 'run_all', 'main',
-    'step1_parse', 'step2_link', 'step3_enrich_ai', 'step4_autofill',
-    'translate_fields', 'parsers', 'app', 'exporters',
-]
+# во время выполнения как обычные .py файлы из _internal/src и _internal/gui.
+#
+# Список имён модулей собираем динамически из src/ и gui/, чтобы его не
+# приходилось вести вручную: любой новый .py (или пакет) автоматически
+# попадает в excludes и не дублируется между PYZ и Tree.
+_spec_root = Path(SPECPATH)
+_project_modules = set()
+for _base in ('src', 'gui'):
+    _base_path = _spec_root / _base
+    if not _base_path.is_dir():
+        continue
+    for _py in _base_path.glob('*.py'):
+        if _py.stem != '__init__':
+            _project_modules.add(_py.stem)          # модуль верхнего уровня
+    for _sub in _base_path.iterdir():
+        if _sub.is_dir() and (_sub / '__init__.py').exists():
+            _project_modules.add(_sub.name)         # пакет (напр. parsers)
+
+excludes = sorted(_project_modules)
+print(f"[MPDB.spec] Исключено из PYZ модулей проекта: {len(excludes)} -> {excludes}")
 
 a = Analysis(
     ['launcher.py'],

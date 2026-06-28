@@ -7,17 +7,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from cross_linker import CrossLinker
+import progress
 
 def main():
-    print("\n🔗 Запуск связывания баз...")
+    progress.info("Запуск связывания баз...", progress=10)
     linker = CrossLinker(Config.OUTPUT_DIR)
     if not linker.load_databases():
-        print("❌ Не удалось загрузить базы")
+        progress.error("Не удалось загрузить базы")
         return
     stats = linker.run()
-    print(f"📊 Статистика обогащения: {stats}")
+    progress.info(f"Статистика обогащения: {stats}", progress=80)
     linker.save_databases()
-    print("✅ Этап 2 завершён. Связи заполнены.")
+    progress.success("Этап 2 завершён. Связи заполнены.", progress=100)
 
 if __name__ == "__main__":
     main()
